@@ -16,3 +16,5 @@
 
 # Ignored Terraform files
 *gitignore*.tf
+
+hosts
