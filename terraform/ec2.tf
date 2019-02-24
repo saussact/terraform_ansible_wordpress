@@ -16,13 +16,17 @@ data "aws_ami" "ubuntu" {
 }
 
 
+data "template_file" "user_data" {
+  template = "${file("${path.module}/userdata.tpl")}"
+}
+
 resource "aws_instance" "web" {
   instance_type = "t2.micro"
   ami = "${data.aws_ami.ubuntu.id}"
 
   # The name of our SSH keypair
   key_name = "${var.key_name}"
-
+  user_data = "${data.template_file.user_data.rendered}"
   # Our Security group to allow HTTP and SSH access
   vpc_security_group_ids = ["${aws_security_group.default.id}"]
 
