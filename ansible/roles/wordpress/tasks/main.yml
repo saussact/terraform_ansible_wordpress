@@ -2,13 +2,14 @@
 
 - name: Download WordPress  
   get_url:
-    url=https://wordpress.org/latest.tar.gz 
+    url=https://wordpress.org/wordpress-4.9.9.tar.gz
     dest=/tmp/wordpress.tar.gz
     validate_certs=no
 
 - name: Extract WordPress  
   unarchive: src=/tmp/wordpress.tar.gz dest=/var/www/ copy=no
   sudo: yes
+
 
 - name: Update default Apache site
   sudo: yes
@@ -18,10 +19,12 @@
     line="DocumentRoot /var/www/wordpress"
   notify:
     - restart apache
-
+    
 - name: Copy sample config file
   command: mv /var/www/wordpress/wp-config-sample.php /var/www/wordpress/wp-config.php creates=/var/www/wordpress/wp-config.php
   sudo: yes
+
+- include_vars: ../vars/main.yml
 
 - name: Update WordPress config file
   lineinfile:
@@ -29,10 +32,198 @@
     regexp="{{ item.regexp }}"
     line="{{ item.line }}"
   with_items:
-    - {'regexp': "define\\('DB_NAME', '(.)+'\\);", 'line': "define('DB_NAME', '{{wp_mysql_db}}');"}        
-    - {'regexp': "define\\('DB_USER', '(.)+'\\);", 'line': "define('DB_USER', '{{wp_mysql_user}}');"}        
-    - {'regexp': "define\\('DB_PASSWORD', '(.)+'\\);", 'line': "define('DB_PASSWORD', '{{wp_mysql_password}}');"}
-    - {'regexp': "define\\('DB_NAME', '(.)+'\\);", 'line': "define('DB_NAME', '{{wp_mysql_db}}');"}        
-    - {'regexp': "define\\('WP_SITEURL', '(.)+'\\);", 'line': "define('WP_SITEURL', 'http://' . $_SERVER['HTTP_HOST']);"}        
-    - {'regexp': "define\\('WP_HOME', '(.)+'\\);", 'line': "define('WP_HOME', 'http://' . $_SERVER['HTTP_HOST']);"}
+    - {'regexp': "define\\('DB_NAME', '(.)+'\\);", 'line': "define('DB_NAME', '{{ wp_mysql_db }}');"}
+    - {'regexp': "define\\('DB_USER', '(.)+'\\);", 'line': "define('DB_USER', '{{ wp_mysql_user }}');"}
+    - {'regexp': "define\\('DB_PASSWORD', '(.)+'\\);", 'line': "define('DB_PASSWORD', '{{ wp_mysql_password }}');"}
+  sudo: yes
+
+- name: Define variable in task.
+  shell: curl http://169.254.169.254/2009-04-04/meta-data/public-ipv4 
+  register: url
+
+- name: Install WordPress
+  command: sudo -i -- wp-cli core install --path="{{ item.0.path }}" --url="{{ url.stdout }}" --title="{{ wordpress_title }}" --admin_user="{{ wordpress_user }}" --admin_password="{{ wordpress_password }}" --admin_email="{{ wordpress_user_email }}" --allow-root
+  with_subelements:
+    - "{{ wordpress_installs }}"
+    - themes
+  when: item.0.path
+  
+# tasks file for wordpress, configure
+- name: configure | create (data) directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: 0777
+    recurse: yes
+  with_items:
+    - "{{ wordpress_installs.0.path }}/themes"
+    - "{{ wordpress_installs.0.path }}/plugins"
+    - "{{ wordpress_installs.0.path }}/users"
+  sudo: yes
+  tags:
+    - wordpress-configure-create-data-directory
+    
+# tasks file for wordpress, themes
+- name: themes identify installation
+  command: sudo -i -- wp-cli --allow-root --no-color --path='{{ item.0.path }}' theme is-installed {{ item.1.name }}
+  register: _check_installation_themes
+  failed_when: false
+  changed_when: false
+  with_subelements:
+    - "{{ wordpress_installs }}"
+    - themes
+  when: item.1.name
+  
+- name: themes install
+  command: sudo -i -- wp-cli --allow-root --no-color --path='{{ item.item.0.path }}' theme install {{ item.item.1.name }}
+  with_items: "{{ _check_installation_themes.results | default([]) }}"
+  when: item.item.1.name and item.rc != 0
+
+
+- name: themes | check install
+  command: sudo -i -- wp-cli --allow-root --no-color --path='{{ item.0.path }}' theme is-installed {{ item.1.name }}
+  changed_when: false
+  with_subelements:
+    - "{{ wordpress_installs }}"
+    - themes
+  when: item.1.name
+
+- name: themes | activate
+  command: sudo -i -- wp-cli --allow-root --no-color --path='{{ item.0.path }}' theme activate {{ item.1.name }}
+  register: _check_activate_theme
+  changed_when: "'Success: Switched to' in _check_activate_theme.stdout"
+  with_subelements:
+    - "{{ wordpress_installs }}"
+    - themes
+  when: item.1.name and item.1.activate | default(false)
+
+# tasks file for wordpress, plugins
+- name: plugins | identify installation
+  command: sudo -i -- wp-cli  --allow-root --no-color --path='{{ item.0.path }}' plugin is-installed {{ item.1.name }}
+  register: _check_installation_plugins
+  failed_when: false
+  changed_when: false
+  with_subelements:
+    - "{{ wordpress_installs }}"
+    - plugins
+  when: item.1
+  tags:
+    - wordpress-plugins-is-installed-plugin
+
+- name: plugins | install | wordpress.org
+  command: sudo -i -- wp-cli  --allow-root --no-color --path='{{ item.item.0.path }}' {{ '--force' if item.item.1.force | default(false) else '' }} plugin install {{ item.item.1.name }}
+  with_items: "{{ _check_installation_plugins.results | default([]) }}"
+  when: item.item.1.name and item.item.1.zip | default('') == '' and item.item.1.url | default('') == '' and item.rc != 0
+  tags:
+    - wordpress-plugins-install-plugin
+    - wordpress-plugins-install-plugin-wordpress_org
+
+- name: plugins | install | zip | copy
+  copy:
+    src: "{{ item.item.1.zip }}"
+    dest: "{{ wordpress_data_path }}/plugins/{{ item.item.1.name }}.zip"
+    owner: root
+    group: root
+    mode: 0777
+  with_items: "{{ _check_installation_plugins.results | default([]) }}"
+  when: item.item.1.name and item.item.1.zip | default('') != '' and item.item.1.url | default('') == '' and item.rc != 0
+  tags:
+    - wordpress-plugins-install-plugin
+    - wordpress-plugins-install-plugin-zip
+    - wordpress-plugins-install-plugin-zip-copy
+
+- name: plugins | install | zip | install
+  command: sudo -i -- wp-cli  --allow-root --no-color --path='{{ item.item.0.path }}'
+    {{ '--force' if item.item.1.force | default(false) else '' }} plugin install {{ wordpress_data_path }}/plugins/{{ item.item.1.name }}.zip
+  with_items: "{{ _check_installation_plugins.results | default([]) }}"
+  when: >
+    item.item.1.name
+    and item.item.1.zip | default('') != ''
+    and item.item.1.url | default('') == ''
+    and item.rc != 0
+  tags:
+    - wordpress-plugins-install-plugin
+    - wordpress-plugins-install-plugin-zip
+    - wordpress-plugins-install-plugin-zip-install
+
+- name: plugins | install | url
+  command: sudo -i -- wp-cli  --allow-root --no-color --path='{{ item.item.0.path }}'
+    {{ '--force' if item.item.1.force | default(false) else '' }} plugin install {{ item.item.1.url }}
+  with_items: "{{ _check_installation_plugins.results | default([]) }}"
+  when: >
+    item.item.1.name
+    and item.item.1.zip | default('') == ''
+    and item.item.1.url | default('') != ''
+    and item.rc != 0
+  tags:
+    - wordpress-plugins-install-plugin
+    - wordpress-plugins-install-plugin-url
+
+- name: plugins | check install
+  command: sudo -i -- wp-cli  --allow-root --no-color --path='{{ item.0.path }}' plugin is-installed {{ item.1.name }}
+  changed_when: false
+  with_subelements:
+    - "{{ wordpress_installs }}"
+    - plugins
+  when: item.1.name
+  tags:
+    - wordpress-plugins-check-install-plugin
+
+- name: plugins | activate
+  command: sudo -i -- wp-cli  --allow-root --no-color --path='{{ item.0.path }}' plugin activate {{ item.1.name }}
+  register: _check_activate_plugin
+  changed_when: "'Success: Plugin' in _check_activate_plugin.stdout and not 'already' in _check_activate_plugin.stdout"
+  with_subelements:
+    - "{{ wordpress_installs }}"
+    - plugins
+  when: item.1.name and item.1.activate | default(true)
+  tags:
+    - wordpress-plugins-activate-plugin
+
+- name: plugins | deactivate
+  command: sudo -i -- wp-cli  --allow-root --no-color --path='{{ item.0.path }}' plugin deactivate {{ item.1.name }}
+  register: _check_deactivate_plugin
+  changed_when: "'Success: Plugin' in _check_deactivate_plugin.stdout and not 'already' in _check_deactivate_plugin.stdout"
+  with_subelements:
+    - "{{ wordpress_installs }}"
+    - plugins
+  when: item.1.name and not item.1.activate | default(true)
+  tags:
+    - wordpress-plugins-deactivate-plugin
+
+# tasks file for wordpress, users
+- name: users | copy file
+  copy:
+    src: "{{ item.users.src }}"
+    dest: "{{ wordpress_data_path }}/users/{{ item.dbname }}.csv"
+    owner: root
+    group: root
+    mode: 0644
+  register: _check_copy_users
+  with_items: "{{ wordpress_installs }}"
+  when: item.users.src is defined
+  tags:
+    - wordpress-users-copy-file
+
+- name: users | install
+  command: sudo -i -- wp-cli user import-csv --allow-root --no-color --path='{{ item.item.path }}' {{ wordpress_data_path }}/users/{{ item.item.dbname }}.csv {{ '--skip-update' if item.item.users.skip_update | default(true) else '' }} --send-email
+  register: _check_installation_users
+  changed_when: "'Success' in _check_installation_users.stdout"
+  with_items: "{{ _check_copy_users.results | default([]) }}"
+  when: item.changed
+  tags:
+    - wordpress-users-import-file
+    
+    
+- name: Define http home.
+  command: sudo -i -- wp-cli option update  --path="{{ wordpress_installs.0.path }}" home 'http://{{ url.stdout }}' --allow-root
+
+  
+- name: Define http siteurl.
+  command: sudo -i -- wp-cli option update  --path="{{ wordpress_installs.0.path }}" siteurl 'http://{{ url.stdout }}' --allow-root
+
+- name: Define http siteurl.
+  file: dest={{ wordpress_installs.0.path }} owner=root group=root mode=u=rwX,g=rwX,o=rwX recurse=yes
   sudo: yes

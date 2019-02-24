@@ -1,2 +1,11 @@
 ---
-# vars file for wordpress
+# mysql config
+wordpress_db: wordpress
+wordpress_db_user: wordpress
+wordpress_db_password: wordpress
+
+# wordpress config
+wordpress_user: aubinsaussac
+wordpress_user_email: aubin.saussac@gmail.com
+wordpress_password: 'tuFr8=aPra@a'
+wordpress_title: Ma Pharma

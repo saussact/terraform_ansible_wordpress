@@ -3,5 +3,28 @@
   roles:
     - server
     - php
+    - wp-cli
     - mysql
     - wordpress
+  vars:
+    wordpress_installs:
+      - path: /var/www/wordpress
+        themes:
+          - name: moesia
+          - name: twentyseventeen
+            activate: true
+        plugins:
+          - name: advanced-access-manager
+            activate: true
+          - name: all-in-one-wp-migration
+            activate: true
+          - name: contact-form-7
+            activate: true           
+          - name: tablepress
+            activate: true            
+          - name: wp-csv-to-database
+            activate: true            
+          - name: wptables
+            activate: true
+        users: {}
+          
